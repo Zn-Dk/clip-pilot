@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "tauri-react-example",
+  "productName": "ClipPilot",
   "version": "0.1.0",
-  "identifier": "com.zndk.tauri-react-example",
+  "identifier": "com.zndk.clip_pilot",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",

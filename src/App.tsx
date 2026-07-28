@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Braces, CaseLower, CaseUpper, Clipboard, Scissors, Search, Star, Trash2 } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager'
 import './App.css'
@@ -70,11 +71,17 @@ function formatTime(timestamp: number) {
   }).format(timestamp)
 }
 
+function isTauriRuntime() {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+}
+
 async function copyToClipboard(text: string) {
   try {
     await writeText(text)
     return true
   } catch {
+    if (isTauriRuntime()) return false
+
     try {
       await navigator.clipboard.writeText(text)
       return true
@@ -84,14 +91,21 @@ async function copyToClipboard(text: string) {
   }
 }
 
-async function readFromClipboard() {
+type ClipboardReadResult = {
+  text: string
+  failed: boolean
+}
+
+async function readFromClipboard(): Promise<ClipboardReadResult> {
   try {
-    return await readText()
+    return { text: await readText(), failed: false }
   } catch {
+    if (isTauriRuntime()) return { text: '', failed: true }
+
     try {
-      return await navigator.clipboard.readText()
+      return { text: await navigator.clipboard.readText(), failed: false }
     } catch {
-      return ''
+      return { text: '', failed: true }
     }
   }
 }
@@ -155,12 +169,12 @@ function App() {
   }
 
   const handleReadClipboard = async () => {
-    const text = await readFromClipboard()
-    if (!text) {
-      showNotice('系统剪贴板没有可读取的文本')
+    const result = await readFromClipboard()
+    if (!result.text) {
+      showNotice(result.failed ? '当前环境无法访问系统剪贴板' : '系统剪贴板没有可读取的文本')
       return
     }
-    setDraftText(text)
+    setDraftText(result.text)
     setDraftTitle('来自系统剪贴板')
     setDraftKind('clip')
     setComposerOpen(true)
@@ -221,7 +235,9 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">CP</span>
+          <span className="brand-mark">
+            <img src="/favicon.svg" alt="" />
+          </span>
           <div>
             <strong>ClipPilot</strong>
             <span>Local-first workspace</span>
@@ -267,7 +283,8 @@ function App() {
 
         <div className="search-row">
           <label className="search-box">
-            <span>搜索</span>
+            <Search size={18} strokeWidth={2.2} aria-hidden="true" />
+            <span className="sr-only">搜索</span>
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题或内容" />
             <kbd>/</kbd>
           </label>
@@ -297,9 +314,11 @@ function App() {
                   <button
                     className={`favorite-button ${clip.favorite ? 'favorited' : ''}`}
                     aria-label={clip.favorite ? '取消收藏' : '收藏'}
+                    aria-pressed={clip.favorite}
+                    title={clip.favorite ? '取消收藏' : '收藏'}
                     onClick={() => updateClip(clip.id, { favorite: !clip.favorite })}
                   >
-                    {clip.favorite ? '已收藏' : '收藏'}
+                    <Star size={17} strokeWidth={2.25} fill={clip.favorite ? 'currentColor' : 'none'} aria-hidden="true" />
                   </button>
                 </article>
               ))}
@@ -326,7 +345,9 @@ function App() {
                     />
                     <span className="detail-time">保存于 {formatTime(selectedClip.createdAt)}</span>
                   </div>
-                  <button className="danger-button" onClick={handleDelete}>删除</button>
+                  <button className="danger-button" onClick={handleDelete} aria-label="删除片段" title="删除片段">
+                    <Trash2 size={18} strokeWidth={2.25} aria-hidden="true" />
+                  </button>
                 </div>
                 <textarea
                   className="detail-editor"
@@ -335,9 +356,17 @@ function App() {
                   aria-label="片段内容"
                 />
                 <div className="action-row">
-                  <button className="primary-button" onClick={() => handleCopy(selectedClip.text)}>复制内容</button>
-                  <button className="secondary-button" onClick={() => updateClip(selectedClip.id, { favorite: !selectedClip.favorite })}>
-                    {selectedClip.favorite ? '取消收藏' : '加入收藏'}
+                  <button className="primary-button detail-action-button" onClick={() => handleCopy(selectedClip.text)}>
+                    <Clipboard size={17} strokeWidth={2.25} aria-hidden="true" />
+                    <span>复制内容</span>
+                  </button>
+                  <button
+                    className={`secondary-button detail-action-button favorite-detail-button ${selectedClip.favorite ? 'favorited' : ''}`}
+                    aria-pressed={selectedClip.favorite}
+                    onClick={() => updateClip(selectedClip.id, { favorite: !selectedClip.favorite })}
+                  >
+                    <Star size={17} strokeWidth={2.25} fill={selectedClip.favorite ? 'currentColor' : 'none'} aria-hidden="true" />
+                    <span>{selectedClip.favorite ? '已收藏' : '加入收藏'}</span>
                   </button>
                 </div>
                 <div className="transform-box">
@@ -346,10 +375,22 @@ function App() {
                     <h3>本地快捷处理</h3>
                   </div>
                   <div className="transform-actions">
-                    <button onClick={() => handleTransform('trim')}>去除首尾空格</button>
-                    <button onClick={() => handleTransform('json')}>格式化 JSON</button>
-                    <button onClick={() => handleTransform('uppercase')}>转大写</button>
-                    <button onClick={() => handleTransform('lowercase')}>转小写</button>
+                    <button className="transform-action" onClick={() => handleTransform('trim')}>
+                      <Scissors size={16} strokeWidth={2.25} aria-hidden="true" />
+                      <span>去除首尾空格</span>
+                    </button>
+                    <button className="transform-action" onClick={() => handleTransform('json')}>
+                      <Braces size={16} strokeWidth={2.25} aria-hidden="true" />
+                      <span>格式化 JSON</span>
+                    </button>
+                    <button className="transform-action" onClick={() => handleTransform('uppercase')}>
+                      <CaseUpper size={16} strokeWidth={2.25} aria-hidden="true" />
+                      <span>转大写</span>
+                    </button>
+                    <button className="transform-action" onClick={() => handleTransform('lowercase')}>
+                      <CaseLower size={16} strokeWidth={2.25} aria-hidden="true" />
+                      <span>转小写</span>
+                    </button>
                   </div>
                 </div>
               </>
