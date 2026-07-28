@@ -1,0 +1,121 @@
+name: build-android
+
+# push 到 main 自动构建（CI）；也可在 Actions 页手动 Run（可选 debug/release/all）
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '构建模式'
+        type: choice
+        options: [all, debug, release]
+        default: all
+
+# 同一分支连续 push 时取消旧 run，只跑最新（防浪费，替代手动）
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # GitHub 不允许 job 级 if 引用 matrix，故用前置 job 输出动态 matrix
+  # push 触发时 inputs.mode 为空字符串 → 默认 all（debug+release 都构建）
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: |
+          MODE="${{ inputs.mode }}"
+          if [ -z "$MODE" ] || [ "$MODE" = "all" ]; then
+            echo 'matrix={"mode":["debug","release"]}' >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix={\"mode\":[\"$MODE\"]}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-android:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      # 安装 Rust 工具链（仅 arm64 目标）
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      # ubuntu-latest 预装 Android SDK（$ANDROID_HOME），补装 NDK
+      - name: Install Android NDK
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          SDKMGR=$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+          "$SDKMGR" --install "ndk;27.0.12077973" "cmake;3.22.1"
+          echo "NDK_HOME=$SDK/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/27.0.12077973" >> "$GITHUB_ENV"
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+      # CI 内生成 gen/android（不提交仓库）
+      - name: Init Android project
+        run: pnpm tauri android init
+      # demo：release 复用 debug 签名，使 release APK 可装机测试（正式分发应改用正式 keystore）
+      - name: Use debug signing for release (demo)
+        if: matrix.mode == 'release'
+        run: |
+          python3 << 'PYEOF'
+          import re
+          p = "src-tauri/gen/android/app/build.gradle.kts"
+          s = open(p).read()
+          # 诊断：打印 buildTypes 段，便于确认模板结构
+          m = re.search(r'buildTypes\s*\{', s)
+          if m:
+              print("=== buildTypes 段 ===")
+              print(s[m.start():m.start()+500])
+          # 宽松匹配 release 块的多种 Kotlin DSL 写法
+          pats = [
+              r'(\n\s*getByName\(\s*"release"\s*\)\s*\{)',
+              r'(\n\s*release\s*\{)',
+              r'(\n\s*"release"\s*\{)',
+              r'(\n\s*named\(\s*"release"\s*\)\s*\{)',
+          ]
+          for pat in pats:
+              new_s, n = re.subn(pat, r'\1\n            signingConfig = signingConfigs["debug"]', s, count=1)
+              if n == 1:
+                  open(p, 'w').write(new_s)
+                  print("已注入 debug 签名，命中:", pat)
+                  break
+          else:
+              raise SystemExit("未找到 release buildType 块（见上方诊断输出）")
+          PYEOF
+      # 按 matrix.mode 构建 debug 或 release（仅 arm64）
+      - name: Build Android APK (${{ matrix.mode }})
+        run: |
+          if [ "${{ matrix.mode }}" = "debug" ]; then
+            pnpm tauri android build --apk --debug --target aarch64
+          else
+            pnpm tauri android build --apk --target aarch64
+          fi
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.repository.name }}-android-apk-${{ matrix.mode }}
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
